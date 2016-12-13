@@ -67,15 +67,6 @@ CRACTOOLSEXTRACT        = "cractools extract"
 
 rule all:
   input: 
-    vcf = expand("{calling_dir}/{mapper}_{caller}/{sample}.vcf", 
-                        calling_dir = CALLING_DIR,
-                        mapper = MAPPERS,
-                        caller = CALLERS,
-                        sample = DATASETS),
-    crac_vcf = expand("{mapping_dir}/{crac_dir}/{sample}.vcf",
-                        mapping_dir = MAPPING_DIR,
-                        crac_dir    = CRAC_NAME,
-                        sample      = DATASETS),
     benchct = expand("{dir}/{sample}.tsv", dir = BENCHCT_DIR, sample = DATASETS)
 
 rule flux_par:
@@ -105,7 +96,7 @@ rule simct:
     indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
     nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"]
   output:
-    dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
+    #dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
     info = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
   log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
   shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {output.dir} \
@@ -280,7 +271,7 @@ rule benchct_configfile:
     infos =      DATASET_DIR + "/{sample}/info.txt",
     mutations =  DATASET_DIR + "/{sample}/mutations.vcf.gz",
     splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
-    chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz"
+    chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
   output: BENCHCT_DIR + "/{sample}.yaml"
   params:
     calling_pipelines = expand("{mapper}_{caller}", mapper = MAPPERS, caller = CALLERS),
@@ -302,6 +293,16 @@ rule benchct_configfile:
     f.close()
 
 rule benchct:
-  input:  BENCHCT_DIR + "/{sample}.yaml"
+  input:
+    conf = BENCHCT_DIR + "/{sample}.yaml",
+    vcf = expand("{calling_dir}/{mapper}_{caller}/{sample}.vcf", 
+                        calling_dir = CALLING_DIR,
+                        mapper = MAPPERS,
+                        caller = CALLERS,
+                        sample = DATASETS),
+    crac_vcf = expand("{mapping_dir}/{crac_dir}/{sample}.vcf",
+                        mapping_dir = MAPPING_DIR,
+                        crac_dir    = CRAC_NAME,
+                        sample      = DATASETS),
   output: BENCHCT_DIR + "/{sample}.tsv"
-  shell: "benchCT -v {input} > {output}"
+  shell: "benchCT -v {input.conf} > {output}"
