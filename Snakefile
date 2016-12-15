@@ -1,4 +1,5 @@
 import os 
+from snakemake.utils import R
 
 __author__ = "Jérôme Audoux (jerome.audoux@inserm.fr)"
 
@@ -11,7 +12,10 @@ DOWNLOAD_DIR  = "download"
 DATASET_DIR   = "dataset"
 MAPPING_DIR   = "mapping"
 CALLING_DIR   = "calling"
+FIGURES_DIR   = "figures"
 BENCHCT_DIR   = "benchCT"
+BENCHCT_FUSION_DIR    = BENCHCT_DIR + "/fusions"
+BENCHCT_MUTATION_DIR  = BENCHCT_DIR + "/mutations"
 TMP_DIR       = "/data/scratch/audoux"
 
 # PARAMETERS
@@ -28,6 +32,8 @@ FLUX_ERROR_MODEL   = ABS_DIR + "/" + DATASET_DIR  + "/illumina-hiseq2500-error-m
 CONDITIONS = {}
 CONDITIONS['normal']  = { 'sub_rate' : '0.0014', 'indel_rate' : '0.0001', 'nb_fusions' : '0', 'k' : '-0.7', 'x0' : '15000', 'x1' : '225000000'}
 CONDITIONS['somatic']   = { 'sub_rate' : '0.0016', 'indel_rate' : '0.0001', 'nb_fusions' : '100', 'k' : '-0.7', 'x0' : '25000', 'x1' : '625000000' }
+
+CHIMSEGMENT_VALUES = [10,12,14,16,18,20,22,24,26,28,30]
 
 # MAPPERS
 STAR_NAME          = "star-2.5.2b"
@@ -52,7 +58,7 @@ CALLERS = [GATK_NAME, FREEBAYES_NAME, SAMTOOLS_NAME]
 
 # BINARIES
 SIMCT                   = "simCT"
-STAR                    = "star"
+STAR                    = "STAR"
 CRAC                    = "crac"
 MARKDUPLICATES          = "PicardCommandLine MarkDuplicates"
 ADDORREPLACEREADGROUPS  = "PicardCommandLine AddOrReplaceReadGroups"
@@ -67,7 +73,13 @@ CRACTOOLSEXTRACT        = "cractools extract"
 
 rule all:
   input: 
-    benchct = expand("{dir}/{sample}.tsv", dir = BENCHCT_DIR, sample = DATASETS)
+    benchct = expand("{dir}/{sample}.tsv", dir = BENCHCT_MUTATION_DIR, sample = DATASETS),
+    benchct_fusion = expand("{dir}/{sample}.tsv", 
+                     dir = BENCHCT_FUSION_DIR,
+                     sample = "GRCh38-100bp-160M-somatic"),
+    figures = expand("{dir}/{sample}/mutations_accuracy_sensitivity.pdf",
+                     dir = FIGURES_DIR,
+                     sample = DATASETS),
 
 rule flux_par:
   input:
@@ -98,12 +110,18 @@ rule simct:
   output:
     #dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
     info = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
+    chimeras = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
   log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
   shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {output.dir} \
             -s {params.sub_rate} -i {params.indel_rate} \
             -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
             --fragment-length 250 --fragment-sd 50 --uniq-ids --vcf-file {POLYMORPHISMS} \
             --vcf-ratio 0.95 --flux-par {input.flux_param} 2> {log}"""
+
+rule simct_chimeras_post:
+  input:  DATASET_DIR + "/{sample}/chimeras.tsv.gz"
+  output: DATASET_DIR + "/{sample}/chimeras-filtered.tsv.gz"
+  shell: "zcat {input} | awk 'function abs(x){{return ((x < 0.0) ? -x : x)}} $1 != $4 || abs($2 - $5) > {MAX_SPLICE_LENGTH}' | gzip -c > {output}"
 
 rule bam_index:
   input: "{file}.bam"
@@ -152,13 +170,13 @@ rule star:
     r1 = DATASET_DIR + "/{sample}/reads_1.fastq.gz",
     r2 = DATASET_DIR + "/{sample}/reads_2.fastq.gz",
   params:
-    index = "/data/indexes/STAR/GRCh38_with_MT/GRCh38_with_MT"
+    index = "/data/indexes/STAR/GRCh38_with_MT"
   output:
-    dir   = STAR_DIR + "/{sample}",
+    dir   = STAR_DIR + "/{sample}/",
     bam   = STAR_DIR + "/{sample}.bam",
     time  = STAR_DIR + "/{sample}-time.txt"
   log: STAR_DIR + "/{sample}-star.log"
-  threads: 20
+  threads: 10
   shell: """/usr/bin/time -v -o {output.time} \
             {STAR} --genomeDir {params.index} --readFilesIn {input.r1} {input.r2} \
             --readFilesCommand zcat --twopassMode Basic --outStd SAM \
@@ -166,8 +184,8 @@ rule star:
             --alignIntronMax {MAX_SPLICE_LENGTH} --chimSegmentMin 12 \
             --chimJunctionOverhangMin 12 --chimSegmentReadGapMax parameter 3 \
             --alignSJstitchMismatchNmax 5 -1 5 5 \
-            --runThreadN {threads} 2> {log} | samtools view -bS - \
-            | samtools sort - -o {output.bam}"""
+            --runThreadN {threads} 2> {log} | samtools view -@5 -bS - \
+            2> {log} | samtools sort -@5 -m 5G - -o {output.bam}"""
 
 rule crac:
   input:
@@ -176,15 +194,14 @@ rule crac:
   params:
     index = "/data/indexes/crac/GRCh38_with_MT"
   output:
-    dir   = CRAC_DIR + "/{sample}",
     bam   = CRAC_DIR + "/{sample}.bam",
     time  = CRAC_DIR + "/{sample}-time.txt"
   log: CRAC_DIR + "/{sample}-crac.log"
-  threads: 20
+  threads: 10
   shell: """/usr/bin/time -v -o {output.time} \
             {CRAC} -k 22 -o - --detailed-sam --no-ambiguity --deep-snv \
             -r {input.r1} {input.r2} --nb-threads {threads} -i {params.index} \
-            2> {log} | samtools view -bS - | samtools sort - -o {output.bam}"""
+            2> {log} | samtools view -@5 -bS - | samtools sort -@5 -m 5G - -o {output.bam}"""
     
 
 rule hisat2:
@@ -257,8 +274,8 @@ rule cractools:
     ref = REFERENCE_BASENAME + ".fa"
   output:
     vcf     = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.vcf",
-    splice  = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-chimera.tsv",
-    chimera = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-splice.bed",
+    chimera = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-chimera.tsv",
+    splice  = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-splice.bed",
     time    = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-cractools-time.txt",
   threads: 10
   shell: """/usr/bin/time -v -o {output.time} \
@@ -266,35 +283,48 @@ rule cractools:
             -c {output.chimera} -m {output.vcf} --coverless-splices \
             -r {input.ref} {input.bam}"""
 
-rule benchct_configfile:
+rule benchct_configfile_mutation:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
     mutations =  DATASET_DIR + "/{sample}/mutations.vcf.gz",
     splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
     chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
-  output: BENCHCT_DIR + "/{sample}.yaml"
+  output: BENCHCT_MUTATION_DIR + "/{sample}.yaml"
+  version: "1.44"
   params:
     calling_pipelines = expand("{mapper}_{caller}", mapper = MAPPERS, caller = CALLERS),
+    tp_dir = BENCHCT_MUTATION_DIR + "/{sample}/true-positives",
     sample = "{sample}"
   run:
+    if not os.path.exists(params.tp_dir):
+      os.makedirs(params.tp_dir)
     f = open(output[0], 'w')
     f.write("---\n")
     f.write("checker:\n")
     f.write("  files:\n")
     f.write("    infos: " + input.infos + "\n")
     f.write("    mutations: " + input.mutations + "\n")
+    f.write("output:\n")
+    f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives]\n")
     f.write("softwares:\n")
     for x in params.calling_pipelines:
       f.write("  - name: " + x + "\n")
       f.write("    files:\n")
       f.write("      - name: " + CALLING_DIR + "/" + x + "/" + params.sample + ".vcf\n")
       f.write("        type: VCF\n")
+      f.write("        true_positives: " + params.tp_dir + "/" + x + "\n")
       f.write("        check: all\n")
+    f.write("  - name: " + CRAC_NAME + "\n")
+    f.write("    files:\n")
+    f.write("      - name: " + CRAC_DIR + "/" + params.sample + ".vcf\n")
+    f.write("        true_positives: " + params.tp_dir + "/" + CRAC_NAME + "\n")
+    f.write("        type: VCF\n")
+    f.write("        check: all\n")
     f.close()
 
-rule benchct:
+rule benchct_mutations:
   input:
-    conf = BENCHCT_DIR + "/{sample}.yaml",
+    conf = BENCHCT_MUTATION_DIR + "/{sample}.yaml",
     vcf = expand("{calling_dir}/{mapper}_{caller}/{sample}.vcf", 
                         calling_dir = CALLING_DIR,
                         mapper = MAPPERS,
@@ -304,5 +334,91 @@ rule benchct:
                         mapping_dir = MAPPING_DIR,
                         crac_dir    = CRAC_NAME,
                         sample      = DATASETS),
-  output: BENCHCT_DIR + "/{sample}.tsv"
+  output: BENCHCT_MUTATION_DIR + "/{sample}.tsv"
   shell: "benchCT -v {input.conf} > {output}"
+
+rule mutations_plot:
+  input:
+    bench = BENCHCT_MUTATION_DIR + "/{sample}.tsv",
+  output:
+    acc_sen = FIGURES_DIR + "/{sample}/mutations_accuracy_sensitivity.pdf",
+  version: "0.03"
+  run:
+    R("""
+    library(ggplot2)
+    dat <- read.table("{input.bench}", header = TRUE)
+    dat2 <- subset(dat, variable == "Sensitivity" | variable == "Accuracy")
+    ggplot(dat2, aes(x=software,y=value,color=variable)) + 
+      geom_point() + 
+      facet_grid(~event) + 
+      coord_flip() + 
+      ylim(0,1) + 
+      theme_bw() + 
+      scale_color_manual(values=c("#999999", "#E69F00"))
+    ggsave("{output.acc_sen}", width = 9, height = 3)
+    """)
+
+
+rule star_fusion:
+  input:
+    r1 = DATASET_DIR + "/{sample}/reads_1.fastq.gz",
+    r2 = DATASET_DIR + "/{sample}/reads_2.fastq.gz",
+  params:
+    index = "/data/indexes/STAR/GRCh38_with_MT",
+    chimSegmentMin = "{nb}"
+  output:
+    dir   = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/",
+    chim  = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
+    time  = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/time.txt"
+  threads: 10
+  shell: """/usr/bin/time -v -o {output.time} \
+            {STAR} --genomeDir {params.index} --readFilesIn {input.r1} {input.r2} \
+            --readFilesCommand zcat --twopassMode Basic --outSAMtype None \
+            --outFileNamePrefix {output.dir} \
+            --alignMatesGapMax {MAX_SPLICE_LENGTH} \
+            --alignIntronMax {MAX_SPLICE_LENGTH} \
+            --chimSegmentMin {params.chimSegmentMin} \
+            --chimJunctionOverhangMin 12 \
+            --chimSegmentReadGapMax 3 \
+            --alignSJstitchMismatchNmax 5 -1 5 5 \
+            --runThreadN {threads}"""
+
+
+rule benchct_configfile_fusion:
+  input: 
+    infos =      DATASET_DIR + "/{sample}/info.txt",
+    chimeras =   DATASET_DIR + "/{sample}/chimeras-filtered.tsv.gz",
+  output: BENCHCT_FUSION_DIR + "/{sample}.yaml"
+  params:
+    pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
+    sample = "{sample}"
+  run:
+    f = open(output[0], 'w')
+    f.write("---\n")
+    f.write("checker:\n")
+    f.write("  files:\n")
+    f.write("    infos: " + input.infos + "\n")
+    f.write("    chimeras: " + input.chimeras + "\n")
+    f.write("softwares:\n")
+    for x in params.pipelines:
+      f.write("  - name: " + x + "\n")
+      f.write("    files:\n")
+      f.write("      - name: " + STAR_DIR + "_fusion/" + params.sample + "-" + x + "/Chimeric.out.junction\n")
+      f.write("        type: STAR::Chimera\n")
+      f.write("        check: all\n")
+    f.close()
+
+rule benchct_fusion:
+  input:
+    conf = BENCHCT_FUSION_DIR + "/{sample}.yaml",
+    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
+                         dir = STAR_DIR,
+                         sample = "{sample}",
+                         nb = CHIMSEGMENT_VALUES),
+  output: BENCHCT_FUSION_DIR + "/{sample}.tsv"
+  shell: "benchCT -v {input.conf} > {output}"
+
+#rule star_fusion_post:
+#  input: "{sample}/Chimeric.out.junction"
+#  output: "{sample}/Chimeric.out.junction"
+#  shell
