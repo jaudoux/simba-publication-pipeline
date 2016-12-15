@@ -56,6 +56,14 @@ HISAT2_2PASS_DIR  = MAPPING_DIR + "/" + HISAT2_2PASS_NAME
 MAPPERS = [STAR_NAME, HISAT2_NAME, HISAT2_2PASS_NAME]
 CALLERS = [GATK_NAME, FREEBAYES_NAME, SAMTOOLS_NAME]
 
+MAPPER_CALLER_PIPELINES = expand("{mapper}_{caller}", 
+                        mapper = MAPPERS,
+                        caller = CALLERS)
+CALLING_PIPELINES = MAPPER_CALLER_PIPELINES
+CALLING_PIPELINES.append(CRAC_NAME)
+
+MUTATION_TYPES = ["snp","insertion","deletion"]
+
 # BINARIES
 SIMCT                   = "simCT"
 STAR                    = "STAR"
@@ -80,6 +88,10 @@ rule all:
     figures = expand("{dir}/{sample}/mutations_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS),
+    tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
+                     dir = FIGURES_DIR,
+                     sample = DATASETS,
+                     event = MUTATION_TYPES),
 
 rule flux_par:
   input:
@@ -325,17 +337,48 @@ rule benchct_configfile_mutation:
 rule benchct_mutations:
   input:
     conf = BENCHCT_MUTATION_DIR + "/{sample}.yaml",
-    vcf = expand("{calling_dir}/{mapper}_{caller}/{sample}.vcf", 
+    vcf = expand("{calling_dir}/{pipeline}/{sample}.vcf", 
                         calling_dir = CALLING_DIR,
-                        mapper = MAPPERS,
-                        caller = CALLERS,
+                        pipeline = MAPPER_CALLER_PIPELINES,
                         sample = DATASETS),
     crac_vcf = expand("{mapping_dir}/{crac_dir}/{sample}.vcf",
                         mapping_dir = MAPPING_DIR,
                         crac_dir    = CRAC_NAME,
                         sample      = DATASETS),
-  output: BENCHCT_MUTATION_DIR + "/{sample}.tsv"
+  output: 
+    bench = BENCHCT_MUTATION_DIR + "/{sample}.tsv",
+    tp_log = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{event}.log",
+                    bench_dir = BENCHCT_MUTATION_DIR,
+                    pipeline = CALLING_PIPELINES,
+                    event = MUTATION_TYPES)
   shell: "benchCT -v {input.conf} > {output}"
+
+rule merge_true_positives:
+  input: 
+    bench = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{{event}}.log",
+                bench_dir = BENCHCT_MUTATION_DIR,
+                pipeline = CALLING_PIPELINES,
+                event = MUTATION_TYPES)
+  output: BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
+  version: "0.02"
+  run: 
+    shell("rm -f {output}")
+    for i, name in enumerate(CALLING_PIPELINES):
+      shell("cut -f1 " + input.bench[i] + "| awk '{{print \"" + name + "\",$1}}' >> {output}")
+
+rule mutation_intersection_plot:
+  input:  BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
+  output: FIGURES_DIR + "/{sample}/{event}-true-positives.pdf"
+  version: "0.05"
+  run:
+    R("""
+    library(UpSetR)
+    dat <- read.table("{input}")
+    mut <- as.data.frame.matrix(t(table(dat)))
+    pdf(file = "{output}", width = 10, height = 5, onefile=FALSE)
+    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", empty.intersections = "on")
+    dev.off(which = dev.cur())
+    """)
 
 rule mutations_plot:
   input:
