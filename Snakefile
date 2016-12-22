@@ -4,7 +4,9 @@ from snakemake.utils import R
 __author__ = "Jérôme Audoux (jerome.audoux@inserm.fr)"
 
 #DATASETS    = ["GRCh38-100bp-150M-germline", "GRCh38-100bp-150M-tumor"]
-DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-100bp-160M-somatic"]
+#DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-100bp-160M-somatic"]
+#DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-101bp-160M-somatic", "GRCh38-200bp-160M-somatic"]
+DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-200bp-160M-somatic"]
 
 # DIRECTORIES
 ABS_DIR       = os.getcwd()
@@ -20,6 +22,7 @@ TMP_DIR       = "/data/scratch/audoux"
 
 # PARAMETERS
 MAX_SPLICE_LENGTH = 300000
+NB_THREADS_MAPPERS = 10
 
 # FILES
 GENOME_DIR         = "/data/genomes/GRCh38/chr"
@@ -59,7 +62,7 @@ CALLERS = [GATK_NAME, FREEBAYES_NAME, SAMTOOLS_NAME]
 MAPPER_CALLER_PIPELINES = expand("{mapper}_{caller}", 
                         mapper = MAPPERS,
                         caller = CALLERS)
-CALLING_PIPELINES = MAPPER_CALLER_PIPELINES
+CALLING_PIPELINES = list(MAPPER_CALLER_PIPELINES)
 CALLING_PIPELINES.append(CRAC_NAME)
 
 MUTATION_TYPES = ["snp","insertion","deletion"]
@@ -92,6 +95,7 @@ rule all:
                      dir = FIGURES_DIR,
                      sample = DATASETS,
                      event = MUTATION_TYPES),
+    new_datast = DATASET_DIR + "/GRCh38-200bp-160M-somatic/info.txt",
 
 rule flux_par:
   input:
@@ -118,13 +122,13 @@ rule simct:
     nb_reads   = "{nb_reads}",
     sub_rate   = lambda wildcards: CONDITIONS[wildcards.condition]["sub_rate"],
     indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
-    nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"]
+    nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"],
+    out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
   output:
-    #dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
     info = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
     chimeras = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
   log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
-  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {output.dir} \
+  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {params.out_dir} \
             -s {params.sub_rate} -i {params.indel_rate} \
             -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
             --fragment-length 250 --fragment-sd 50 --uniq-ids --vcf-file {POLYMORPHISMS} \
@@ -188,8 +192,11 @@ rule star:
     bam   = STAR_DIR + "/{sample}.bam",
     time  = STAR_DIR + "/{sample}-time.txt"
   log: STAR_DIR + "/{sample}-star.log"
-  threads: 10
-  shell: """/usr/bin/time -v -o {output.time} \
+  threads: NB_THREADS_MAPPERS
+  run:
+    if not os.path.exists(output.dir):
+      os.makedirs(output.dir)
+    shell("""/usr/bin/time -v -o {output.time} \
             {STAR} --genomeDir {params.index} --readFilesIn {input.r1} {input.r2} \
             --readFilesCommand zcat --twopassMode Basic --outStd SAM \
             --outFileNamePrefix {output.dir} --alignMatesGapMax {MAX_SPLICE_LENGTH} \
@@ -197,7 +204,7 @@ rule star:
             --chimJunctionOverhangMin 12 --chimSegmentReadGapMax parameter 3 \
             --alignSJstitchMismatchNmax 5 -1 5 5 \
             --runThreadN {threads} 2> {log} | samtools view -@5 -bS - \
-            2> {log} | samtools sort -@5 -m 5G - -o {output.bam}"""
+            2> {log} | samtools sort -@5 -m 5G - -o {output.bam}""")
 
 rule crac:
   input:
@@ -209,7 +216,7 @@ rule crac:
     bam   = CRAC_DIR + "/{sample}.bam",
     time  = CRAC_DIR + "/{sample}-time.txt"
   log: CRAC_DIR + "/{sample}-crac.log"
-  threads: 10
+  threads: NB_THREADS_MAPPERS
   shell: """/usr/bin/time -v -o {output.time} \
             {CRAC} -k 22 -o - --detailed-sam --no-ambiguity --deep-snv \
             -r {input.r1} {input.r2} --nb-threads {threads} -i {params.index} \
@@ -227,7 +234,7 @@ rule hisat2:
     novel_splice  = HISAT2_DIR + "/{sample}_novel_splice.bed",
     time          = HISAT2_DIR + "/{sample}-time.txt"
   log: HISAT2_DIR + "/{sample}-hisat.log"
-  threads: 20
+  threads: NB_THREADS_MAPPERS
   shell: """/usr/bin/time -v -o {output.time} \
             {HISAT2} -x {params.index} -1 {input.r1} -2 {input.r2} \
             --max-intronlen {MAX_SPLICE_LENGTH} \
@@ -247,7 +254,7 @@ rule hisat2_2pass:
     novel_splice  = HISAT2_2PASS_DIR + "/{sample}_novel_splice.bed",
     time          = HISAT2_2PASS_DIR + "/{sample}-time.txt"
   log: HISAT2_DIR + "/{sample}-hisat.log"
-  threads: 20
+  threads: NB_THREADS_MAPPERS
   shell: """/usr/bin/time -v -o {output.time} \
             {HISAT2} -x {params.index} -1 {input.r1} -2 {input.r2} \
             --max-intronlen {MAX_SPLICE_LENGTH} \
@@ -302,7 +309,7 @@ rule benchct_configfile_mutation:
     splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
     chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
   output: BENCHCT_MUTATION_DIR + "/{sample}.yaml"
-  version: "1.44"
+  version: "1.46"
   params:
     calling_pipelines = expand("{mapper}_{caller}", mapper = MAPPERS, caller = CALLERS),
     tp_dir = BENCHCT_MUTATION_DIR + "/{sample}/true-positives",
@@ -317,7 +324,7 @@ rule benchct_configfile_mutation:
     f.write("    infos: " + input.infos + "\n")
     f.write("    mutations: " + input.mutations + "\n")
     f.write("output:\n")
-    f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives]\n")
+    f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives, true-positives, nb-elements]\n")
     f.write("softwares:\n")
     for x in params.calling_pipelines:
       f.write("  - name: " + x + "\n")
@@ -369,14 +376,14 @@ rule merge_true_positives:
 rule mutation_intersection_plot:
   input:  BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
   output: FIGURES_DIR + "/{sample}/{event}-true-positives.pdf"
-  version: "0.05"
+  version: "0.07"
   run:
     R("""
     library(UpSetR)
     dat <- read.table("{input}")
     mut <- as.data.frame.matrix(t(table(dat)))
     pdf(file = "{output}", width = 10, height = 5, onefile=FALSE)
-    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", empty.intersections = "on")
+    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut))
     dev.off(which = dev.cur())
     """)
 
@@ -413,8 +420,11 @@ rule star_fusion:
     dir   = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/",
     chim  = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
     time  = STAR_DIR + "_fusion/{sample}-{nb}chimSegmentMin/time.txt"
-  threads: 10
-  shell: """/usr/bin/time -v -o {output.time} \
+  threads: NB_THREADS_MAPPERS
+  run:
+    if not os.path.exists(output.dir):
+      os.makedirs(output.dir)
+    shell("""/usr/bin/time -v -o {output.time} \
             {STAR} --genomeDir {params.index} --readFilesIn {input.r1} {input.r2} \
             --readFilesCommand zcat --twopassMode Basic --outSAMtype None \
             --outFileNamePrefix {output.dir} \
@@ -424,7 +434,7 @@ rule star_fusion:
             --chimJunctionOverhangMin 12 \
             --chimSegmentReadGapMax 3 \
             --alignSJstitchMismatchNmax 5 -1 5 5 \
-            --runThreadN {threads}"""
+            --runThreadN {threads}""")
 
 
 rule benchct_configfile_fusion:
