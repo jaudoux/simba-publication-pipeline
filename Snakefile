@@ -17,6 +17,7 @@ BENCHCT_DIR   = "benchCT"
 SCRIPTS_DIR   = "scripts"
 BENCHCT_FUSION_DIR    = BENCHCT_DIR + "/fusions"
 BENCHCT_MUTATION_DIR  = BENCHCT_DIR + "/mutations"
+BENCHCT_MAPPING_DIR  = BENCHCT_DIR + "/mapping"
 TMP_DIR       = "/data/scratch/audoux"
 
 # PARAMETERS
@@ -66,6 +67,8 @@ MAPPER_CALLER_PIPELINES.append(CRAC_NAME + "_" + STAR_NAME + "_" + GATK_NAME)
 CALLING_PIPELINES = list(MAPPER_CALLER_PIPELINES)
 CALLING_PIPELINES.append(CRAC_NAME)
 
+MAPPERS.append(CRAC_NAME)
+
 MUTATION_TYPES = ["snp","insertion","deletion"]
 
 # BINARIES
@@ -84,16 +87,24 @@ BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
 REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
+ruleorder: benchct_mutations > benchct_fusion > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
 
 rule all:
   input: 
-    benchct_fusion = expand("{dir}/{sample}.tsv", 
-                     dir = BENCHCT_FUSION_DIR,
-                     sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"]),
-    figures = expand("{dir}/{sample}/mutations_accuracy_sensitivity.pdf",
+    #benchct_fusion = expand("{dir}/{sample}.tsv", 
+    #                 dir = BENCHCT_FUSION_DIR,
+    #                 sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"]),
+    #benchct_mapping = expand("{dir}/{sample}.tsv", 
+    #                 dir = BENCHCT_MAPPING_DIR,
+    #                 sample = OLD_DATASETS),
+    figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
-                     sample = OLD_DATASETS),
+                     sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
+                     type = ["fusions"]),
+    figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
+                     dir = FIGURES_DIR,
+                     sample = OLD_DATASETS,
+                     type = ["mutations", "mapping"]),
     tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
                      sample = OLD_DATASETS,
@@ -384,6 +395,52 @@ rule benchct_mutations:
                     event = MUTATION_TYPES)
   shell: "benchCT -v {input.conf} > {output.bench}"
 
+rule benchct_configfile_mapping:
+  input: 
+    infos =      DATASET_DIR + "/{sample}/info.txt",
+    splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
+    bam_files = expand("{dir}/{mapper}/{{sample}}.bam",dir=MAPPING_DIR,mapper=MAPPERS),
+    bai_files = expand("{dir}/{mapper}/{{sample}}.bam.bai",dir=MAPPING_DIR,mapper=MAPPERS),
+  output: BENCHCT_MAPPING_DIR + "/{sample}.yaml"
+  version: "0.01"
+  params:
+    mapping_pipelines = MAPPERS,
+    tp_dir = BENCHCT_MAPPING_DIR + "/{sample}/true-positives",
+    sample = "{sample}"
+  run:
+    if not os.path.exists(params.tp_dir):
+      os.makedirs(params.tp_dir)
+    f = open(output[0], 'w')
+    f.write("---\n")
+    f.write("checker:\n")
+    f.write("  files:\n")
+    f.write("    infos: " + input.infos + "\n")
+    f.write("    splices: " + input.splices + "\n")
+    f.write("analyzers:\n")
+    f.write("  SAM:\n")
+    f.write("    options:\n")
+    f.write("      max_hits: 1\n")
+    f.write("      sampling_rate: 0.01\n")
+    f.write("output:\n")
+    f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives, true-positives, nb-elements]\n")
+    f.write("softwares:\n")
+    for i, name in enumerate(params.mapping_pipelines):
+      f.write("  - name: " + name + "\n")
+      f.write("    files:\n")
+      f.write("      - name: " + input.bam_files[i] + "\n")
+      f.write("        type: SAM\n")
+      #f.write("        true_positives: " + params.tp_dir + "/" + x + "\n")
+      f.write("        check: all\n")
+    f.close()
+
+rule benchct_generic:
+  input:
+    conf = "{bench_dir}/{sample}.yaml",
+  output: 
+    bench = "{bench_dir}/{sample}.tsv",
+  threads: 5
+  shell: "benchCT -p {threads} -v {input.conf} > {output.bench}"
+
 rule merge_true_positives:
   input: 
     bench = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{{event}}.log",
@@ -410,11 +467,11 @@ rule mutation_intersection_plot:
     dev.off(which = dev.cur())
     """)
 
-rule mutations_plot:
+rule precision_recall_plot:
   input:
-    bench = BENCHCT_MUTATION_DIR + "/{sample}.tsv",
+    bench = BENCHCT_DIR + "/{type}/{sample}.tsv",
   output:
-    acc_sen = FIGURES_DIR + "/{sample}/mutations_accuracy_sensitivity.pdf",
+    acc_sen = FIGURES_DIR + "/{sample}/{type}_accuracy_sensitivity.pdf",
   version: "0.06"
   run:
     R("""
@@ -423,7 +480,7 @@ rule mutations_plot:
     dat2 <- subset(dat, variable == "Sensitivity" | variable == "Accuracy")
     ggplot(dat2, aes(x=software,y=value,color=variable)) + 
       geom_point() + 
-      facet_grid(~event) + 
+      facet_grid(~event, scales = "free") + 
       coord_flip() + 
       #ylim(0,1) + 
       theme_bw() + 
