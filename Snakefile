@@ -3,10 +3,8 @@ from snakemake.utils import R
 
 __author__ = "Jérôme Audoux (jerome.audoux@inserm.fr)"
 
-#DATASETS    = ["GRCh38-100bp-150M-germline", "GRCh38-100bp-150M-tumor"]
-#DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-100bp-160M-somatic"]
-#DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-101bp-160M-somatic", "GRCh38-200bp-160M-somatic"]
-DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-200bp-160M-somatic"]
+OLD_DATASETS    = ["GRCh38-100bp-160M-normal", "GRCh38-100bp-160M-somatic", "GRCh38-200bp-160M-somatic"]
+DATASETS    = ["GRCh38-101bp-160M-normal", "GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic", "GRCh38-150bp-160M-normal"]
 
 # DIRECTORIES
 ABS_DIR       = os.getcwd()
@@ -16,12 +14,14 @@ MAPPING_DIR   = "mapping"
 CALLING_DIR   = "calling"
 FIGURES_DIR   = "figures"
 BENCHCT_DIR   = "benchCT"
+SCRIPTS_DIR   = "scripts"
 BENCHCT_FUSION_DIR    = BENCHCT_DIR + "/fusions"
 BENCHCT_MUTATION_DIR  = BENCHCT_DIR + "/mutations"
 TMP_DIR       = "/data/scratch/audoux"
 
 # PARAMETERS
 MAX_SPLICE_LENGTH = 300000
+MIN_CHIM_OVERHANG = 15
 NB_THREADS_MAPPERS = 10
 
 # FILES
@@ -33,8 +33,8 @@ FLUX_ERROR_MODEL   = ABS_DIR + "/" + DATASET_DIR  + "/illumina-hiseq2500-error-m
 
 # DATASET CONDITIONS
 CONDITIONS = {}
-CONDITIONS['normal']  = { 'sub_rate' : '0.0014', 'indel_rate' : '0.0001', 'nb_fusions' : '0', 'k' : '-0.7', 'x0' : '15000', 'x1' : '225000000'}
-CONDITIONS['somatic']   = { 'sub_rate' : '0.0016', 'indel_rate' : '0.0001', 'nb_fusions' : '100', 'k' : '-0.7', 'x0' : '25000', 'x1' : '625000000' }
+CONDITIONS['normal']  = { 'sub_rate' : '0.0014', 'indel_rate' : '0.0001', 'nb_fusions' : '0', 'k' : '-0.7', 'x0' : '15000', 'x1' : '225000000', 'nb_molecules' : 10000000 }
+CONDITIONS['somatic']   = { 'sub_rate' : '0.0016', 'indel_rate' : '0.0001', 'nb_fusions' : '100', 'k' : '-0.7', 'x0' : '25000', 'x1' : '625000000', 'nb_molecules' : 10000000 }
 
 CHIMSEGMENT_VALUES = [10,12,14,16,18,20,22,24,26,28,30]
 
@@ -62,6 +62,7 @@ CALLERS = [GATK_NAME, FREEBAYES_NAME, SAMTOOLS_NAME]
 MAPPER_CALLER_PIPELINES = expand("{mapper}_{caller}", 
                         mapper = MAPPERS,
                         caller = CALLERS)
+MAPPER_CALLER_PIPELINES.append(CRAC_NAME + "_" + STAR_NAME + "_" + GATK_NAME)
 CALLING_PIPELINES = list(MAPPER_CALLER_PIPELINES)
 CALLING_PIPELINES.append(CRAC_NAME)
 
@@ -81,21 +82,22 @@ FREEBAYES               = "freebayes"
 MPILEUP                 = "samtools mpileup"
 BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
+REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
+
+ruleorder: vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
 
 rule all:
   input: 
-    benchct = expand("{dir}/{sample}.tsv", dir = BENCHCT_MUTATION_DIR, sample = DATASETS),
     benchct_fusion = expand("{dir}/{sample}.tsv", 
                      dir = BENCHCT_FUSION_DIR,
-                     sample = "GRCh38-100bp-160M-somatic"),
+                     sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"]),
     figures = expand("{dir}/{sample}/mutations_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
-                     sample = DATASETS),
+                     sample = OLD_DATASETS),
     tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
-                     sample = DATASETS,
+                     sample = OLD_DATASETS,
                      event = MUTATION_TYPES),
-    new_datast = DATASET_DIR + "/GRCh38-200bp-160M-somatic/info.txt",
 
 rule flux_par:
   input:
@@ -123,21 +125,20 @@ rule simct:
     sub_rate   = lambda wildcards: CONDITIONS[wildcards.condition]["sub_rate"],
     indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
     nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"],
+    nb_molecules = lambda wildcards: CONDITIONS[wildcards.condition]["nb_molecules"], 
     out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
   output:
     info = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
     chimeras = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
+    r1 =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_1.fastq.gz",
+    r2 =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_2.fastq.gz",
   log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
   shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {params.out_dir} \
             -s {params.sub_rate} -i {params.indel_rate} \
             -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
+            --nb-molecules {params.nb_molecules} \
             --fragment-length 250 --fragment-sd 50 --uniq-ids --vcf-file {POLYMORPHISMS} \
             --vcf-ratio 0.95 --flux-par {input.flux_param} 2> {log}"""
-
-rule simct_chimeras_post:
-  input:  DATASET_DIR + "/{sample}/chimeras.tsv.gz"
-  output: DATASET_DIR + "/{sample}/chimeras-filtered.tsv.gz"
-  shell: "zcat {input} | awk 'function abs(x){{return ((x < 0.0) ? -x : x)}} $1 != $4 || abs($2 - $5) > {MAX_SPLICE_LENGTH}' | gzip -c > {output}"
 
 rule bam_index:
   input: "{file}.bam"
@@ -148,6 +149,21 @@ rule fa_dict:
   input: "{file}.fa"
   output: "{file}.dict"
   shell: "{CREATESEQUENCEDICT} R={input} O={output}"
+
+rule vcf_sort:
+  input: "{file}.vcf"
+  output: temp("{file}_sorted.vcf")
+  shell: "grep '^#' {input} > {output} && grep -v '^#' {input} | sort -t$'\t' -k1,1 -k2,2n >> {output}"
+
+rule vcf_compress:
+  input: "{file}_sorted.vcf"
+  output: "{file}.vcf.gz"
+  shell: "bgzip -c {input} > {output}"
+
+rule vcf_index:
+  input: "{file}.vcf.gz"
+  output: "{file}.vcf.gz.csi"
+  shell: "bcftools index {input}"
 
 rule addRG:
   input: MAPPING_DIR + "/{mapper}/{sample}.bam"
@@ -302,6 +318,16 @@ rule cractools:
             -c {output.chimera} -m {output.vcf} --coverless-splices \
             -r {input.ref} {input.bam}"""
 
+rule crac_star_calling_merge:
+  input:
+    crac_vcf = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.vcf.gz",
+    crac_vcf_index = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.vcf.gz.csi",
+    star_vcf = CALLING_DIR + "/" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz",
+    star_vcf_index = CALLING_DIR + "/" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz.csi",
+  output:
+    CALLING_DIR + "/" + CRAC_NAME + "_" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf"
+  shell: "bcftools merge {input.crac_vcf} {input.star_vcf} > {output}"
+
 rule benchct_configfile_mutation:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
@@ -309,9 +335,9 @@ rule benchct_configfile_mutation:
     splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
     chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
   output: BENCHCT_MUTATION_DIR + "/{sample}.yaml"
-  version: "1.46"
+  version: "1.47"
   params:
-    calling_pipelines = expand("{mapper}_{caller}", mapper = MAPPERS, caller = CALLERS),
+    calling_pipelines = MAPPER_CALLER_PIPELINES,
     tp_dir = BENCHCT_MUTATION_DIR + "/{sample}/true-positives",
     sample = "{sample}"
   run:
@@ -344,30 +370,27 @@ rule benchct_configfile_mutation:
 rule benchct_mutations:
   input:
     conf = BENCHCT_MUTATION_DIR + "/{sample}.yaml",
-    vcf = expand("{calling_dir}/{pipeline}/{sample}.vcf", 
+    vcf = expand("{calling_dir}/{pipeline}/{{sample}}.vcf", 
                         calling_dir = CALLING_DIR,
-                        pipeline = MAPPER_CALLER_PIPELINES,
-                        sample = DATASETS),
-    crac_vcf = expand("{mapping_dir}/{crac_dir}/{sample}.vcf",
+                        pipeline = MAPPER_CALLER_PIPELINES),
+    crac_vcf = expand("{mapping_dir}/{crac_dir}/{{sample}}.vcf",
                         mapping_dir = MAPPING_DIR,
-                        crac_dir    = CRAC_NAME,
-                        sample      = DATASETS),
+                        crac_dir    = CRAC_NAME),
   output: 
     bench = BENCHCT_MUTATION_DIR + "/{sample}.tsv",
     tp_log = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{event}.log",
                     bench_dir = BENCHCT_MUTATION_DIR,
                     pipeline = CALLING_PIPELINES,
                     event = MUTATION_TYPES)
-  shell: "benchCT -v {input.conf} > {output}"
+  shell: "benchCT -v {input.conf} > {output.bench}"
 
 rule merge_true_positives:
   input: 
     bench = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{{event}}.log",
                 bench_dir = BENCHCT_MUTATION_DIR,
-                pipeline = CALLING_PIPELINES,
-                event = MUTATION_TYPES)
+                pipeline = CALLING_PIPELINES)
   output: BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
-  version: "0.02"
+  version: "0.06"
   run: 
     shell("rm -f {output}")
     for i, name in enumerate(CALLING_PIPELINES):
@@ -392,7 +415,7 @@ rule mutations_plot:
     bench = BENCHCT_MUTATION_DIR + "/{sample}.tsv",
   output:
     acc_sen = FIGURES_DIR + "/{sample}/mutations_accuracy_sensitivity.pdf",
-  version: "0.03"
+  version: "0.06"
   run:
     R("""
     library(ggplot2)
@@ -402,9 +425,9 @@ rule mutations_plot:
       geom_point() + 
       facet_grid(~event) + 
       coord_flip() + 
-      ylim(0,1) + 
+      #ylim(0,1) + 
       theme_bw() + 
-      scale_color_manual(values=c("#999999", "#E69F00"))
+      scale_color_manual(values=c("#4E77AA", "#E69F00"))
     ggsave("{output.acc_sen}", width = 9, height = 3)
     """)
 
@@ -440,7 +463,7 @@ rule star_fusion:
 rule benchct_configfile_fusion:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
-    chimeras =   DATASET_DIR + "/{sample}/chimeras-filtered.tsv.gz",
+    chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
   output: BENCHCT_FUSION_DIR + "/{sample}.yaml"
   params:
     pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
