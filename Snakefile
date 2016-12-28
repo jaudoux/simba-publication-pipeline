@@ -87,27 +87,21 @@ BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
 REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: benchct_mutations > benchct_fusion > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
+ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
 
 rule all:
   input: 
-    #benchct_fusion = expand("{dir}/{sample}.tsv", 
-    #                 dir = BENCHCT_FUSION_DIR,
-    #                 sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"]),
-    #benchct_mapping = expand("{dir}/{sample}.tsv", 
-    #                 dir = BENCHCT_MAPPING_DIR,
-    #                 sample = OLD_DATASETS),
     figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
                      sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
                      type = ["fusions"]),
     figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
-                     sample = OLD_DATASETS,
+                     sample = DATASETS,
                      type = ["mutations", "mapping"]),
     tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
-                     sample = OLD_DATASETS,
+                     sample = DATASETS,
                      event = MUTATION_TYPES),
 
 rule flux_par:
@@ -521,10 +515,16 @@ rule benchct_configfile_fusion:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
     chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
+    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
+                         dir = STAR_DIR,
+                         sample = "{sample}",
+                         nb = CHIMSEGMENT_VALUES),
+    crac_fusion = CRAC_DIR + "/{sample}-chimera.tsv"
   output: BENCHCT_FUSION_DIR + "/{sample}.yaml"
   params:
     pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
     sample = "{sample}"
+  version: "0.01"
   run:
     f = open(output[0], 'w')
     f.write("---\n")
@@ -539,17 +539,12 @@ rule benchct_configfile_fusion:
       f.write("      - name: " + STAR_DIR + "_fusion/" + params.sample + "-" + x + "/Chimeric.out.junction\n")
       f.write("        type: STAR::Chimera\n")
       f.write("        check: all\n")
+    f.write("  - name: " + CRAC_NAME + "\n")
+    f.write("    files:\n")
+    f.write("      - name: " + input.crac_fusion + "\n")
+    f.write("        type: CRAC::Chimera\n")
+    f.write("        check: all\n")
     f.close()
-
-rule benchct_fusion:
-  input:
-    conf = BENCHCT_FUSION_DIR + "/{sample}.yaml",
-    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
-                         dir = STAR_DIR,
-                         sample = "{sample}",
-                         nb = CHIMSEGMENT_VALUES),
-  output: BENCHCT_FUSION_DIR + "/{sample}.tsv"
-  shell: "benchCT -v {input.conf} > {output}"
 
 #rule star_fusion_post:
 #  input: "{sample}/Chimeric.out.junction"
