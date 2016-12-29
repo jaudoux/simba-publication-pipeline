@@ -78,8 +78,9 @@ CRAC                    = "crac"
 MARKDUPLICATES          = "PicardCommandLine MarkDuplicates"
 ADDORREPLACEREADGROUPS  = "PicardCommandLine AddOrReplaceReadGroups"
 CREATESEQUENCEDICT      = "PicardCommandLine CreateSequenceDictionary"
-SPLITNCIGARREADS        = "gatk -T SplitNCigarReads"
-HAPLOTYPECALLER         = "gatk -T HaplotypeCaller"
+GATK                    = "java -Djava.io.tmpdir=" + TMP_DIR + " -jar /data/share/GATK/GenomeAnalysisTK.jar"
+SPLITNCIGARREADS        = GATK + " -T SplitNCigarReads"
+HAPLOTYPECALLER         = GATK + " -T HaplotypeCaller"
 HISAT2                  = "hisat2"
 FREEBAYES               = "freebayes"
 MPILEUP                 = "samtools mpileup"
@@ -396,7 +397,7 @@ rule benchct_configfile_mapping:
     bam_files = expand("{dir}/{mapper}/{{sample}}.bam",dir=MAPPING_DIR,mapper=MAPPERS),
     bai_files = expand("{dir}/{mapper}/{{sample}}.bam.bai",dir=MAPPING_DIR,mapper=MAPPERS),
   output: BENCHCT_MAPPING_DIR + "/{sample}.yaml"
-  version: "0.01"
+  version: "0.02"
   params:
     mapping_pipelines = MAPPERS,
     tp_dir = BENCHCT_MAPPING_DIR + "/{sample}/true-positives",
@@ -414,7 +415,7 @@ rule benchct_configfile_mapping:
     f.write("  SAM:\n")
     f.write("    options:\n")
     f.write("      max_hits: 1\n")
-    f.write("      sampling_rate: 0.01\n")
+    #f.write("      sampling_rate: 0.01\n")
     f.write("output:\n")
     f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives, true-positives, nb-elements]\n")
     f.write("softwares:\n")
