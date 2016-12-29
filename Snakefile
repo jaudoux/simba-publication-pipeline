@@ -88,7 +88,7 @@ BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
 REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > hisat2_2pass > hisat2 > star
+ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star > crac
 
 rule all:
   input: 
@@ -104,6 +104,7 @@ rule all:
                      dir = FIGURES_DIR,
                      sample = DATASETS,
                      event = MUTATION_TYPES),
+    mapping_time_fig = FIGURES_DIR + "/mapping-time.pdf",
 
 rule flux_par:
   input:
@@ -284,7 +285,41 @@ rule hisat2_2pass:
             --novel-splicesite-outfile {output.novel_splice} \
             -p {threads} 2> {log} \
             | samtools view -bS - | samtools sort - -o {output.bam}"""
-    
+
+rule mapping_stats:
+  input: expand("{dir}/{mapper}/{sample}-time.txt", dir = MAPPING_DIR, mapper = MAPPERS, sample = DATASETS)
+  output: MAPPING_DIR + "/time.tsv"
+  run:
+    fo = open(output[0],'w')
+    for i,software in enumerate(MAPPERS):
+      for j,sample in enumerate(DATASETS):
+        f = open(MAPPING_DIR + "/" + software + "/" + sample + "-time.txt")
+        for line in f:
+          fields = line.rstrip().split(":")
+          value = fields[1].lstrip()
+          stat_name = fields[0].lstrip()
+          stat_short_name = ''
+          if stat_name == 'User time (seconds)':
+            stat_short_name = "time"
+            value = str(int(float(value)) / 60)
+          elif stat_name == 'Maximum resident set size (kbytes)':
+            stat_short_name = "memory"
+            value = str(int(float(value)) / 1000000)
+          if stat_short_name != '':
+            fo.write("\t".join([software,sample,stat_short_name,value]) + "\n")
+
+rule mapping_stats_figure:
+  input: MAPPING_DIR + "/time.tsv"
+  output: FIGURES_DIR + "/mapping-time.pdf"
+  version: "0.01"
+  run:
+    R("""
+    library(ggplot2)
+    dat <- read.table("{input}")
+    ggplot(dat, aes(x=V1,y=V4,fill=V2)) + geom_bar(stat="identity",position="dodge") + facet_grid(V3~.,scales="free")
+    ggsave("{output}",width=10,height=3)
+    """)
+
 rule freebayes:
   input:
     bam = MAPPING_DIR + "/{mapper}/{sample}_splited_N_cigar_reads.bam",
