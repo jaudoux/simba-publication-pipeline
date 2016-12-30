@@ -64,6 +64,7 @@ MAPPER_CALLER_PIPELINES = expand("{mapper}_{caller}",
                         mapper = MAPPERS,
                         caller = CALLERS)
 MAPPER_CALLER_PIPELINES.append(CRAC_NAME + "_" + STAR_NAME + "_" + GATK_NAME)
+MAPPER_CALLER_PIPELINES.append(HISAT2_2PASS_NAME + "_" + GATK_NAME + "_" + STAR_NAME + "_" + GATK_NAME)
 CALLING_PIPELINES = list(MAPPER_CALLER_PIPELINES)
 CALLING_PIPELINES.append(CRAC_NAME)
 
@@ -94,7 +95,8 @@ rule all:
   input: 
     figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
-                     sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
+                     #sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
+                     sample = DATASETS,
                      type = ["fusions"]),
     figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
@@ -369,6 +371,17 @@ rule crac_star_calling_merge:
     CALLING_DIR + "/" + CRAC_NAME + "_" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf"
   shell: "bcftools merge {input.crac_vcf} {input.star_vcf} > {output}"
 
+rule star_hisat_calling_merge:
+  input:
+    star_vcf = CALLING_DIR + "/" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz",
+    star_vcf_index = CALLING_DIR + "/" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz.csi",
+    hisat_vcf = CALLING_DIR + "/" + HISAT2_2PASS_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz",
+    hisat_vcf_index = CALLING_DIR + "/" + HISAT2_2PASS_NAME + "_" + GATK_NAME + "/{sample}.vcf.gz.csi",
+  output:
+    CALLING_DIR + "/" + HISAT2_2PASS_NAME + "_" + GATK_NAME + "_" + STAR_NAME + "_" + GATK_NAME + "/{sample}.vcf"
+  shell: "bcftools merge --force-samples {input.hisat_vcf} {input.star_vcf} > {output}"
+
+
 rule benchct_configfile_mutation:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
@@ -551,12 +564,13 @@ rule benchct_configfile_fusion:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
     chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
-    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction",
+    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction.post",
                          dir = STAR_DIR,
                          sample = "{sample}",
                          nb = CHIMSEGMENT_VALUES),
     crac_fusion = CRAC_DIR + "/{sample}-chimera.tsv"
   output: BENCHCT_FUSION_DIR + "/{sample}.yaml"
+  version: "0.01"
   params:
     pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
     sample = "{sample}"
@@ -582,7 +596,12 @@ rule benchct_configfile_fusion:
     f.write("        check: all\n")
     f.close()
 
-#rule star_fusion_post:
-#  input: "{sample}/Chimeric.out.junction"
-#  output: "{sample}/Chimeric.out.junction"
-#  shell
+rule star_fusion_post:
+  input: "{sample}/Chimeric.out.junction"
+  output: "{sample}/Chimeric.out.junction.post"
+  params:
+    min_recurrence = 2
+  shell: """cat {input} | awk '{{print $1,$2,$3,$4,$5,$6,$7,$8,$9}}' | \
+            sort | uniq -c | sort -k1,1rn | \
+            awk 'BEGIN {{ OFS = "\t"}} $1 >= {params.min_recurrence} \
+            {{print $2,$3,$4,$5,$6,$7,$8,$9,$10}}' > {output}"""
