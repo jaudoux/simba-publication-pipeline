@@ -444,8 +444,10 @@ rule benchct_configfile_mapping:
     splices =    DATASET_DIR + "/{sample}/splices.bed.gz",
     bam_files = expand("{dir}/{mapper}/{{sample}}.bam",dir=MAPPING_DIR,mapper=MAPPERS),
     bai_files = expand("{dir}/{mapper}/{{sample}}.bam.bai",dir=MAPPING_DIR,mapper=MAPPERS),
+    #cractools_junc = expand("{dir}/{mapper}/{{sample}}-splice.bed",dir=MAPPING_DIR,mapper=[k for k in MAPPERS if 'crac' in k]),
+    cractools_junc = expand("{dir}/{mapper}/{{sample}}-splice.bed",dir=MAPPING_DIR,mapper=CRAC_NAME),
   output: BENCHCT_MAPPING_DIR + "/{sample}.yaml"
-  version: "0.02"
+  version: "0.03"
   params:
     mapping_pipelines = MAPPERS,
     tp_dir = BENCHCT_MAPPING_DIR + "/{sample}/true-positives",
@@ -463,7 +465,7 @@ rule benchct_configfile_mapping:
     f.write("  SAM:\n")
     f.write("    options:\n")
     f.write("      max_hits: 1\n")
-    #f.write("      sampling_rate: 0.01\n")
+    f.write("      sampling_rate: 0.001\n")
     f.write("output:\n")
     f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives, true-positives, nb-elements]\n")
     f.write("softwares:\n")
@@ -472,8 +474,20 @@ rule benchct_configfile_mapping:
       f.write("    files:\n")
       f.write("      - name: " + input.bam_files[i] + "\n")
       f.write("        type: SAM\n")
-      #f.write("        true_positives: " + params.tp_dir + "/" + x + "\n")
-      f.write("        check: all\n")
+      f.write("        check:\n")
+      f.write("          - mapping\n")
+      if name.find("star"):
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "/SJ.out.tab\n")
+        f.write("        type: STAR::Junction\n")
+      elif name.find("crac"):
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "-splice.bed\n")
+        f.write("        type: BED::Junction\n")
+      elif name.find("hisat"):
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "_novel_splice.bed\n")
+        f.write("        type: Hisat::Splice\n")
+      else:
+        # Otherwise we check splices from SAM file
+        f.write("          - splice\n")
     f.close()
 
 rule benchct_generic:
