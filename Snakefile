@@ -476,14 +476,14 @@ rule benchct_configfile_mapping:
       f.write("        type: SAM\n")
       f.write("        check:\n")
       f.write("          - mapping\n")
-      if name.find("star"):
+      if name.find("star") != -1:
         f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "/SJ.out.tab\n")
         f.write("        type: STAR::Junction\n")
-      elif name.find("crac"):
-        f.write("      - name: " + MAPPING_DIR + "/" + name + "-splice.bed\n")
+      elif name.find("crac") != -1:
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "-splice.bed\n")
         f.write("        type: BED::Junction\n")
-      elif name.find("hisat"):
-        f.write("      - name: " + MAPPING_DIR + "/" + name + "_novel_splice.bed\n")
+      elif name.find("hisat") != -1:
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "_novel_splice.bed\n")
         f.write("        type: Hisat::Splice\n")
       else:
         # Otherwise we check splices from SAM file
