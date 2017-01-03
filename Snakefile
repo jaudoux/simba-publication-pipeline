@@ -44,6 +44,7 @@ STAR_NAME          = "star-2.5.2b"
 HISAT2_NAME        = "hisat2-2.0.4"
 HISAT2_2PASS_NAME  = HISAT2_NAME + "_2pass"
 CRAC_NAME          = "crac-2.5.0"
+GSNAP_NAME         = "gsnap" # version 2016-11-07
 
 # CALLERS
 GATK_NAME       = "gatk"
@@ -56,8 +57,10 @@ STAR_DIR          = MAPPING_DIR + "/" + STAR_NAME
 CRAC_DIR          = MAPPING_DIR + "/" + CRAC_NAME
 HISAT2_DIR        = MAPPING_DIR + "/" + HISAT2_NAME
 HISAT2_2PASS_DIR  = MAPPING_DIR + "/" + HISAT2_2PASS_NAME
+GSNAP_DIR         = MAPPING_DIR + "/" + GSNAP_NAME
 
 MAPPERS = [STAR_NAME, HISAT2_NAME, HISAT2_2PASS_NAME]
+#MAPPERS = [STAR_NAME, HISAT2_NAME, HISAT2_2PASS_NAME, GSNAP_NAME]
 CALLERS = [GATK_NAME, FREEBAYES_NAME, SAMTOOLS_NAME]
 
 MAPPER_CALLER_PIPELINES = expand("{mapper}_{caller}", 
@@ -84,24 +87,25 @@ SPLITNCIGARREADS        = GATK + " -T SplitNCigarReads"
 HAPLOTYPECALLER         = GATK + " -T HaplotypeCaller"
 HISAT2                  = "hisat2"
 FREEBAYES               = "freebayes"
+GSNAP                   = "gsnap"
 MPILEUP                 = "samtools mpileup"
 BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
 REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star > crac
+ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star > gsnap > crac > crac_fusion
 
 rule all:
   input: 
-    figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
-                     dir = FIGURES_DIR,
-                     #sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
-                     sample = DATASETS,
-                     type = ["fusions"]),
+    #figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
+    #                 dir = FIGURES_DIR,
+    #                 #sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
+    #                 sample = DATASETS,
+    #                 type = ["fusions"]),
     figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
-                     type = ["mutations", "mapping"]),
+                     type = MUTATION_TYPES + ["fusions", "mapping"]),
     tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
@@ -246,6 +250,23 @@ rule crac:
             {CRAC} -k 22 -o - --detailed-sam --no-ambiguity --deep-snv \
             -r {input.r1} {input.r2} --nb-threads {threads} -i {params.index} \
             2> {log} | samtools view -@5 -bS - | samtools sort -@5 -m 5G - -o {output.bam}"""
+
+rule crac_fusion:
+  input:
+    r1 = DATASET_DIR + "/{sample}/reads_1.fastq.gz",
+    r2 = DATASET_DIR + "/{sample}/reads_2.fastq.gz",
+  params:
+    index = "/data/indexes/crac/GRCh38_with_MT"
+  output:
+    bam   = temp(CRAC_DIR + "_fusion/{sample}.bam"),
+    time  = CRAC_DIR + "_fusion/{sample}-time.txt"
+  log: CRAC_DIR + "_fusion/{sample}-crac.log"
+  threads: NB_THREADS_MAPPERS
+  shell: """/usr/bin/time -v -o {output.time} \
+            {CRAC} -k 22 -o - --detailed-sam --no-ambiguity --deep-snv \
+            --min-chimera-score 0 \
+            -r {input.r1} {input.r2} --nb-threads {threads} -i {params.index} \
+            2> {log} | samtools view -@5 -bS - | samtools sort -@5 -m 5G - -o {output.bam}"""
     
 
 rule hisat2:
@@ -287,6 +308,25 @@ rule hisat2_2pass:
             --novel-splicesite-outfile {output.novel_splice} \
             -p {threads} 2> {log} \
             | samtools view -bS - | samtools sort - -o {output.bam}"""
+
+rule gsnap:
+  input:
+    r1 = DATASET_DIR + "/{sample}/reads_1.fastq.gz",
+    r2 = DATASET_DIR + "/{sample}/reads_2.fastq.gz",
+  params:
+    index_dir = "/data/indexes/gsnap/GRCh38",
+    index_name = "GRCh38",
+  output:
+    bam   = GSNAP_DIR + "/{sample}.bam",
+    time  = GSNAP_DIR + "/{sample}-time.txt",
+  log: GSNAP_DIR + "/{sample}-gsnap.log"
+  threads: NB_THREADS_MAPPERS
+  shell: """/usr/bin/time -v -o {output.time} \
+           {GSNAP} -D {params.index_dir} -d {params.index_name} \
+           --gunzip -t {threads} -N 1 --localsplicedist {MAX_SPLICE_LENGTH} \
+           -A sam --pairmax-rna {MAX_SPLICE_LENGTH} \
+           {input.r1} {input.r2} 2> {log} \
+           | samtools view -bS - | samtools sort - -o {output.bam}"""
 
 rule mapping_stats:
   input: expand("{dir}/{mapper}/{sample}-time.txt", dir = MAPPING_DIR, mapper = MAPPERS, sample = DATASETS)
@@ -347,14 +387,14 @@ rule samtools:
 
 rule cractools:
   input:
-    bam = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.bam",
-    bai = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.bam.bai",
+    bam = MAPPING_DIR + "/crac{version}/{sample}.bam",
+    bai = MAPPING_DIR + "/crac{version}/{sample}.bam.bai",
     ref = REFERENCE_BASENAME + ".fa"
   output:
-    vcf     = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.vcf",
-    chimera = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-chimera.tsv",
-    splice  = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-splice.bed",
-    time    = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}-cractools-time.txt",
+    vcf     = MAPPING_DIR + "/crac{version}/{sample}.vcf",
+    chimera = MAPPING_DIR + "/crac{version}/{sample}-chimera.tsv",
+    splice  = MAPPING_DIR + "/crac{version}/{sample}-splice.bed",
+    time    = MAPPING_DIR + "/crac{version}/{sample}-cractools-time.txt",
   threads: 10
   shell: """/usr/bin/time -v -o {output.time} \
             {CRACTOOLSEXTRACT} -p {threads} -s {output.splice} \
@@ -438,6 +478,20 @@ rule benchct_mutations:
                     event = MUTATION_TYPES)
   shell: "benchCT -v {input.conf} > {output.bench}"
 
+rule split_benchct_mutation_results:
+  input: BENCHCT_MUTATION_DIR + "/{sample}.tsv"
+  output:
+    insertion = BENCHCT_DIR + "/insertion/{sample}.tsv",
+    deletion = BENCHCT_DIR + "/deletion/{sample}.tsv",
+    snp = BENCHCT_DIR + "/snp/{sample}.tsv",
+  run:
+    shell("head -1 {input} > {output.insertion}")
+    shell("grep insertion {input} >> {output.insertion}")
+    shell("head -1 {input} > {output.deletion}")
+    shell("grep deletion {input} >> {output.deletion}")
+    shell("head -1 {input} > {output.snp}")
+    shell("grep snp {input} >> {output.snp}")
+
 rule benchct_configfile_mapping:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
@@ -513,14 +567,19 @@ rule merge_true_positives:
 rule mutation_intersection_plot:
   input:  BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
   output: FIGURES_DIR + "/{sample}/{event}-true-positives.pdf"
-  version: "0.07"
+  params:
+    title = "{event} - {sample} - true positives"
+  version: "0.012"
   run:
     R("""
     library(UpSetR)
     dat <- read.table("{input}")
     mut <- as.data.frame.matrix(t(table(dat)))
     pdf(file = "{output}", width = 10, height = 5, onefile=FALSE)
+    plot(0,type='n',axes=FALSE,ann=FALSE)
+    #mtext("{params.title}")
     upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut))
+    title(main = "{params.title}")
     dev.off(which = dev.cur())
     """)
 
@@ -529,19 +588,28 @@ rule precision_recall_plot:
     bench = BENCHCT_DIR + "/{type}/{sample}.tsv",
   output:
     acc_sen = FIGURES_DIR + "/{sample}/{type}_accuracy_sensitivity.pdf",
-  version: "0.06"
+  params:
+    title = "{type} - {sample}"
+  version: "0.10"
   run:
     R("""
     library(ggplot2)
+    library(reshape2)
     dat <- read.table("{input.bench}", header = TRUE)
-    dat2 <- subset(dat, variable == "Sensitivity" | variable == "Accuracy")
+    dat2 <- dcast(dat,software+event~variable)
+    dat2$fscore <- 2*(dat2$Accuracy*dat2$Sensitivity)/(dat2$Accuracy+dat2$Sensitivity)
+    dat2$software <- factor(dat2$software, levels=dat2[order(dat2$fscore), "software"])
+    #dat2 <- dat2[order(dat2$fscore,decreasing=T),]
+    dat2 <- melt(dat2,id=c("software","event"))
+    dat2 <- subset(dat2, variable == "Sensitivity" | variable == "Accuracy" | variable == "fscore")
     ggplot(dat2, aes(x=software,y=value,color=variable)) + 
       geom_point() + 
       facet_grid(~event, scales = "free") + 
       coord_flip() + 
-      #ylim(0,1) + 
+      ylim(NA,1) + 
       theme_bw() + 
-      scale_color_manual(values=c("#4E77AA", "#E69F00"))
+      scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9")) +
+      ggtitle("{params.title}")
     ggsave("{output.acc_sen}", width = 9, height = 3)
     """)
 
