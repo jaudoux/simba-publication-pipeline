@@ -34,10 +34,28 @@ FLUX_ERROR_MODEL   = ABS_DIR + "/" + DATASET_DIR  + "/illumina-hiseq2500-error-m
 
 # DATASET CONDITIONS
 CONDITIONS = {}
-CONDITIONS['normal']  = { 'sub_rate' : '0.0014', 'indel_rate' : '0.0001', 'nb_fusions' : '0', 'k' : '-0.7', 'x0' : '15000', 'x1' : '225000000', 'nb_molecules' : 10000000 }
-CONDITIONS['somatic']   = { 'sub_rate' : '0.0016', 'indel_rate' : '0.0001', 'nb_fusions' : '100', 'k' : '-0.7', 'x0' : '25000', 'x1' : '625000000', 'nb_molecules' : 10000000 }
+CONDITIONS['normal']  = {
+  'sub_rate' : '0.0014', 
+  'indel_rate' : '0.0001', 
+  'nb_fusions' : '0', 
+  'k' : '-0.7', 
+  'x0' : '15000', 
+  'x1' : '225000000', 
+  'nb_molecules' : 10000000
+}
+
+CONDITIONS['somatic']   = { 
+  'sub_rate' : '0.0016', 
+  'indel_rate' : '0.0001', 
+  'nb_fusions' : '100', 
+  'k' : '-0.7', 
+  'x0' : '25000', 
+  'x1' : '625000000', 
+  'nb_molecules' : 10000000
+}
 
 CHIMSEGMENT_VALUES = [10,12,14,16,18,20,22,24,26,28,30]
+CHIMVALUE_VALUES   = [0,0.2,0.4,0.6,0.8,0.85,0.9,0.95,1]
 
 # MAPPERS
 STAR_NAME          = "star-2.5.2b"
@@ -71,6 +89,8 @@ MAPPER_CALLER_PIPELINES.append(HISAT2_2PASS_NAME + "_" + GATK_NAME + "_" + STAR_
 CALLING_PIPELINES = list(MAPPER_CALLER_PIPELINES)
 CALLING_PIPELINES.append(CRAC_NAME)
 
+FUSION_PIPELINES = expand("{name}-{nb}chimSegmentMin", name = STAR_NAME, nb = CHIMSEGMENT_VALUES) +  expand("{name}-{nb}minChimValue", name = CRAC_NAME, nb = CHIMVALUE_VALUES)
+
 MAPPERS.append(CRAC_NAME)
 
 MUTATION_TYPES = ["snp","insertion","deletion"]
@@ -93,23 +113,26 @@ BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
 REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: benchct_mutations > benchct_generic > vcf_sort > cractools > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star > gsnap > crac > crac_fusion
+ruleorder: benchct_fusions > benchct_mutations > benchct_generic > benchct_configfile_mutation > benchct_configfile_mapping > benchct_configfile_fusion > vcf_sort > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star_split_fusion > star_fusion_post > star_fusion > star > gsnap > cractools_split_fusion > cractools > crac > crac_fusion > split_simct_fusions > flux_par
 
 rule all:
   input: 
-    #figures_fusion = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
-    #                 dir = FIGURES_DIR,
-    #                 #sample = ["GRCh38-101bp-160M-somatic","GRCh38-150bp-160M-somatic"],
-    #                 sample = DATASETS,
-    #                 type = ["fusions"]),
     figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
-                     type = MUTATION_TYPES + ["fusions", "mapping"]),
-    tp_figs = expand("{dir}/{sample}/{event}-true-positives.pdf",
+                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["mapping"]),
+    figures_p = expand("{dir}/{sample}/{type}_true_false_positives.pdf",
+                     dir = FIGURES_DIR,
+                     sample = DATASETS,
+                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["mapping"]),
+    tp_figs_mutation = expand("{dir}/{sample}/mutations-{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
                      event = MUTATION_TYPES),
+    tp_figs_fusion = expand("{dir}/{sample}/{type}-chimera-true-positives.pdf",
+                     dir = FIGURES_DIR,
+                     sample = DATASETS,
+                     type = ["colinear_fusion","noncolinear_fusion"]),
     mapping_time_fig = FIGURES_DIR + "/mapping-time.pdf",
 
 rule flux_par:
@@ -128,30 +151,30 @@ rule flux_par:
     shell("echo 'TMP_DIR {params.tmp_dir}' >> {output}")
     shell("echo 'ERR_FILE {input.error_model}' >> {output}")
 
-rule simct:
-  input:
-    genome = GENOME_DIR,
-    annot  = ANNOTATIONS,
-    flux_param = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/flux.par"
-  params:
-    nb_reads   = "{nb_reads}",
-    sub_rate   = lambda wildcards: CONDITIONS[wildcards.condition]["sub_rate"],
-    indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
-    nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"],
-    nb_molecules = lambda wildcards: CONDITIONS[wildcards.condition]["nb_molecules"], 
-    out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
-  output:
-    info = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
-    chimeras = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
-    r1 =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_1.fastq.gz",
-    r2 =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_2.fastq.gz",
-  log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
-  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {params.out_dir} \
-            -s {params.sub_rate} -i {params.indel_rate} \
-            -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
-            --nb-molecules {params.nb_molecules} \
-            --fragment-length 250 --fragment-sd 50 --uniq-ids --vcf-file {POLYMORPHISMS} \
-            --vcf-ratio 0.95 --flux-par {input.flux_param} 2> {log}"""
+#rule simct:
+#  input:
+#    genome = GENOME_DIR,
+#    annot  = ANNOTATIONS,
+#    flux_param = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/flux.par"
+#  params:
+#    nb_reads   = "{nb_reads}",
+#    sub_rate   = lambda wildcards: CONDITIONS[wildcards.condition]["sub_rate"],
+#    indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
+#    nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"],
+#    nb_molecules = lambda wildcards: CONDITIONS[wildcards.condition]["nb_molecules"], 
+#    out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
+#  output:
+#    info =      DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
+#    chimeras =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
+#    r1 =        DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_1.fastq.gz",
+#    r2 =        DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_2.fastq.gz",
+#  log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
+#  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {params.out_dir} \
+#            -s {params.sub_rate} -i {params.indel_rate} \
+#            -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
+#            --nb-molecules {params.nb_molecules} \
+#            --fragment-length 250 --fragment-sd 50 --uniq-ids --vcf-file {POLYMORPHISMS} \
+#            --vcf-ratio 0.95 --flux-par {input.flux_param} 2> {log}"""
 
 rule bam_index:
   input: "{file}.bam"
@@ -401,6 +424,25 @@ rule cractools:
             -c {output.chimera} -m {output.vcf} --coverless-splices \
             -r {input.ref} {input.bam}"""
 
+rule crac_chimvalue_filter:
+  input: MAPPING_DIR + "/crac{version}/{sample}-chimera.tsv",
+  output: MAPPING_DIR + "/crac{version}/{sample}-{score}minChimValue-chimera.tsv",
+  params:
+    minChimValue = "{score}",
+    min_recurrence = 2,
+  run:
+    shell("head -1 {input} > {output}")
+    shell("cat {input} | tail -n+2 | awk '$7 >= {params.minChimValue} && $9 >= {params.min_recurrence}' >> {output}")
+
+rule cractools_split_fusion:
+  input: MAPPING_DIR + "/crac{version}/{sample}-chimera.tsv",
+  output:
+    colinear_fusion = MAPPING_DIR + "/crac{version}/{sample}-colinear-chimera.tsv",
+    noncolinear_fusion = MAPPING_DIR + "/crac{version}/{sample}-noncolinear-chimera.tsv",
+  run:
+    shell("cat {input} | awk '$1 == $4 && $3 == $6 {{print $0}}' > {output.colinear_fusion}")
+    shell("cat {input} | awk '$1 != $4 || $3 != $6 {{print $0}}' > {output.noncolinear_fusion}")
+
 rule crac_star_calling_merge:
   input:
     crac_vcf = MAPPING_DIR + "/" + CRAC_NAME + "/{sample}.vcf.gz",
@@ -552,7 +594,7 @@ rule benchct_generic:
   threads: 5
   shell: "benchCT -p {threads} -v {input.conf} > {output.bench}"
 
-rule merge_true_positives:
+rule merge_true_positives_mutations:
   input: 
     bench = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{{event}}.log",
                 bench_dir = BENCHCT_MUTATION_DIR,
@@ -565,20 +607,20 @@ rule merge_true_positives:
       shell("cut -f1 " + input.bench[i] + "| awk '{{print \"" + name + "\",$1}}' >> {output}")
 
 rule mutation_intersection_plot:
-  input:  BENCHCT_MUTATION_DIR + "/{sample}/true-positives/{event}.tsv"
-  output: FIGURES_DIR + "/{sample}/{event}-true-positives.pdf"
+  input:  BENCHCT_DIR + "/{type}/{sample}/true-positives/{event}.tsv"
+  output: FIGURES_DIR + "/{sample}/{type}-{event}-true-positives.pdf"
   params:
-    title = "{event} - {sample} - true positives"
-  version: "0.012"
+    title = "{type} - {event} - {sample} - true positives"
+  version: "0.019"
   run:
     R("""
     library(UpSetR)
     dat <- read.table("{input}")
     mut <- as.data.frame.matrix(t(table(dat)))
-    pdf(file = "{output}", width = 10, height = 5, onefile=FALSE)
+    pdf(file = "{output}", width = 8, height = 5, onefile=FALSE)
     plot(0,type='n',axes=FALSE,ann=FALSE)
     #mtext("{params.title}")
-    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut))
+    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut),nintersects=10)
     title(main = "{params.title}")
     dev.off(which = dev.cur())
     """)
@@ -590,25 +632,57 @@ rule precision_recall_plot:
     acc_sen = FIGURES_DIR + "/{sample}/{type}_accuracy_sensitivity.pdf",
   params:
     title = "{type} - {sample}"
-  version: "0.10"
+  version: "0.129"
   run:
     R("""
     library(ggplot2)
     library(reshape2)
+    library(gridExtra)
     dat <- read.table("{input.bench}", header = TRUE)
     dat2 <- dcast(dat,software+event~variable)
     dat2$fscore <- 2*(dat2$Accuracy*dat2$Sensitivity)/(dat2$Accuracy+dat2$Sensitivity)
     dat2$software <- factor(dat2$software, levels=dat2[order(dat2$fscore), "software"])
     #dat2 <- dat2[order(dat2$fscore,decreasing=T),]
     dat2 <- melt(dat2,id=c("software","event"))
-    dat2 <- subset(dat2, variable == "Sensitivity" | variable == "Accuracy" | variable == "fscore")
-    ggplot(dat2, aes(x=software,y=value,color=variable)) + 
+    dat_plot1 <- subset(dat2, variable == "Sensitivity" | variable == "Accuracy" | variable == "fscore")
+    pdf("{output.acc_sen}", width = 8, height = 3)
+    plot1 <- ggplot(dat_plot1, aes(x=software,y=value,color=variable)) + 
       geom_point() + 
-      facet_grid(~event, scales = "free") + 
+      #facet_grid(~event, scales = "free") + 
       coord_flip() + 
       ylim(NA,1) + 
+      theme_bw() + theme(legend.position="bottom",axis.title.x=element_blank(),legend.title=element_blank()) + 
+      scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9"))
+    dat_plot2 <- subset(dat2, variable == "false-positives")
+    plot2 <- ggplot(dat_plot2, aes(x=software,y=value,fill=variable)) + 
+      geom_bar(position = "dodge", stat = "identity") + 
+      #facet_grid(~variable, scales = "free") + 
+      coord_flip() + 
+      theme_bw() + theme(legend.position="bottom",axis.text.y=element_blank(),axis.title.y=element_blank(),axis.ticks.y=element_blank(),axis.title.x=element_blank(),legend.title=element_blank(),panel.border=element_blank(),panel.margin=element_blank(),panel.grid=element_blank())
+    lay <- rbind(c(1,1,1,1,2))
+    grid.arrange(plot1, plot2, ncol=2,top="{params.title}", layout_matrix = lay)
+    dev.off()
+    """)
+
+rule true_false_positives_plot:
+  input:
+    bench = BENCHCT_DIR + "/{type}/{sample}.tsv",
+  output:
+    acc_sen = FIGURES_DIR + "/{sample}/{type}_true_false_positives.pdf",
+  params:
+    title = "{type} - {sample}"
+  version: "0.02"
+  run:
+    R("""
+    library(ggplot2)
+    dat <- read.table("{input.bench}", header = TRUE)
+    dat2 <- subset(dat, variable == "true-positives" | variable == "false-negatives" | variable == "false-positives")
+    ggplot(dat2, aes(x=software,y=value,fill=variable)) + 
+      geom_bar(position = "dodge", stat = "identity") + 
+      facet_grid(~variable, scales = "free") + 
+      coord_flip() + 
       theme_bw() + 
-      scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9")) +
+      #scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9")) +
       ggtitle("{params.title}")
     ggsave("{output.acc_sen}", width = 9, height = 3)
     """)
@@ -641,22 +715,33 @@ rule star_fusion:
             --alignSJstitchMismatchNmax 5 -1 5 5 \
             --runThreadN {threads}""")
 
+rule split_simct_fusions:
+  input: DATASET_DIR + "/{sample}/chimeras.tsv.gz",
+  output:
+    colinear_fusion = BENCHCT_DIR + "/colinear_fusion/{sample}/chimeras.tsv",
+    noncolinear_fusion = BENCHCT_DIR + "/noncolinear_fusion/{sample}/chimeras.tsv",
+  run:
+    shell("zcat {input} | awk '$1 == $4 && $3 == $6 {{print $0}}' > {output.colinear_fusion}")
+    shell("zcat {input} | awk '$1 != $4 || $3 != $6 {{print $0}}' > {output.noncolinear_fusion}")
 
 rule benchct_configfile_fusion:
   input: 
     infos =      DATASET_DIR + "/{sample}/info.txt",
-    chimeras =   DATASET_DIR + "/{sample}/chimeras.tsv.gz",
-    star_fusion = expand("{dir}_fusion/{sample}-{nb}chimSegmentMin/Chimeric.out.junction.post",
+    chimeras =   BENCHCT_DIR + "/{type}_fusion/{sample}/chimeras.tsv",
+    star_fusion = expand("{dir}_fusion/{{sample}}-{chimsegment}chimSegmentMin/Chimeric.out.junction.{{type}}.post",
                          dir = STAR_DIR,
-                         sample = "{sample}",
-                         nb = CHIMSEGMENT_VALUES),
-    crac_fusion = CRAC_DIR + "/{sample}-chimera.tsv"
-  output: BENCHCT_FUSION_DIR + "/{sample}.yaml"
-  version: "0.01"
+                         chimsegment = CHIMSEGMENT_VALUES),
+    crac_fusion = expand("{dir}/{{sample}}-{chimvalue}minChimValue-{{type}}-chimera.tsv",
+                          dir = CRAC_DIR + "_fusion",
+                          chimvalue = CHIMVALUE_VALUES),
+  output: BENCHCT_DIR + "/{type}_fusion/{sample}.yaml"
+  version: "0.02"
   params:
-    pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
-    sample = "{sample}"
-  version: "0.01"
+    star_pipelines = expand("{nb}chimSegmentMin", nb = CHIMSEGMENT_VALUES),
+    crac_pipelines = expand("{nb}minChimValue", nb = CHIMVALUE_VALUES),
+    sample = "{sample}",
+    fusion_type = "{type}",
+    tp_dir = BENCHCT_DIR + "/{type}_fusion/{sample}/true-positives",
   run:
     f = open(output[0], 'w')
     f.write("---\n")
@@ -664,26 +749,64 @@ rule benchct_configfile_fusion:
     f.write("  files:\n")
     f.write("    infos: " + input.infos + "\n")
     f.write("    chimeras: " + input.chimeras + "\n")
+    f.write("output:\n")
+    f.write("  statistics: [Accuracy, Sensitivity, true-negatives, false-positives, false-negatives, true-positives, nb-elements]\n")
     f.write("softwares:\n")
-    for x in params.pipelines:
-      f.write("  - name: " + x + "\n")
+    for x in params.star_pipelines:
+      f.write("  - name: " + STAR_NAME + "-" + x + "\n")
       f.write("    files:\n")
-      f.write("      - name: " + STAR_DIR + "_fusion/" + params.sample + "-" + x + "/Chimeric.out.junction\n")
+      f.write("      - name: " + STAR_DIR + "_fusion/" + params.sample + "-" + x + "/Chimeric.out.junction." + params.fusion_type + ".post\n")
+      f.write("        true_positives: " + params.tp_dir + "/" + STAR_NAME + "-" + x + "\n")
       f.write("        type: STAR::Chimera\n")
       f.write("        check: all\n")
-    f.write("  - name: " + CRAC_NAME + "\n")
-    f.write("    files:\n")
-    f.write("      - name: " + input.crac_fusion + "\n")
-    f.write("        type: CRAC::Chimera\n")
-    f.write("        check: all\n")
+    for y in params.crac_pipelines:
+      f.write("  - name: " + CRAC_NAME + "-" + y + "\n")
+      f.write("    files:\n")
+      f.write("      - name: " + CRAC_DIR + "_fusion/" + params.sample + "-" + y + "-" + params.fusion_type + "-chimera.tsv\n")
+      f.write("        type: CRAC::Chimera\n")
+      f.write("        true_positives: " + params.tp_dir + "/" + CRAC_NAME + "-" + y + "\n")
+      f.write("        check: all\n")
     f.close()
+
+rule benchct_fusions:
+  input:
+    conf = BENCHCT_DIR + "/{type}_fusion/{sample}.yaml",
+  output: 
+    bench = BENCHCT_DIR + "/{type}_fusion/{sample}.tsv",
+    tp_log = expand("{bench_dir}/{{type}}_fusion/{{sample}}/true-positives/{pipeline}-chimera.log",
+                    bench_dir = BENCHCT_DIR,
+                    pipeline = FUSION_PIPELINES),
+  shell: "benchCT -v {input.conf} > {output.bench}"
+
+rule merge_true_positives_fusions:
+  input: 
+    bench = expand("{bench_dir}/{{type}}_fusion/{{sample}}/true-positives/{pipeline}-chimera.log",
+                bench_dir = BENCHCT_DIR,
+                pipeline = FUSION_PIPELINES),
+  output: BENCHCT_DIR + "/{type}_fusion/{sample}/true-positives/chimera.tsv"
+  version: "0.01"
+  run: 
+    shell("rm -f {output}")
+    for i, name in enumerate(FUSION_PIPELINES):
+      shell("cut -f1 " + input.bench[i] + "| awk '{{print \"" + name + "\",$1}}' >> {output}")
 
 rule star_fusion_post:
   input: "{sample}/Chimeric.out.junction"
   output: "{sample}/Chimeric.out.junction.post"
   params:
     min_recurrence = 2
+  version: "0.01"
   shell: """cat {input} | awk '{{print $1,$2,$3,$4,$5,$6,$7,$8,$9}}' | \
             sort | uniq -c | sort -k1,1rn | \
-            awk 'BEGIN {{ OFS = "\t"}} $1 >= {params.min_recurrence} \
+            awk 'BEGIN {{ OFS = "\t"}} $1 >= {params.min_recurrence} && $8 >= 0 \
             {{print $2,$3,$4,$5,$6,$7,$8,$9,$10}}' > {output}"""
+
+rule star_split_fusion:
+  input: "{sample}/Chimeric.out.junction.post"
+  output:
+    colinear_fusion = "{sample}/Chimeric.out.junction.colinear.post",
+    noncolinear_fusion = "{sample}/Chimeric.out.junction.noncolinear.post",
+  run:
+    shell("cat {input} | awk '$1 == $4 && $3 == $6 {{print $0}}' > {output.colinear_fusion}")
+    shell("cat {input} | awk '$1 != $4 || $3 != $6 {{print $0}}' > {output.noncolinear_fusion}")
+
