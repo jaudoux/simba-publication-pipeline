@@ -14,7 +14,6 @@ MAPPING_DIR   = "mapping"
 CALLING_DIR   = "calling"
 FIGURES_DIR   = "figures"
 BENCHCT_DIR   = "benchCT"
-SCRIPTS_DIR   = "scripts"
 BENCHCT_FUSION_DIR    = BENCHCT_DIR + "/fusions"
 BENCHCT_MUTATION_DIR  = BENCHCT_DIR + "/mutations"
 BENCHCT_MAPPING_DIR  = BENCHCT_DIR + "/mapping"
@@ -63,6 +62,7 @@ HISAT2_NAME        = "hisat2-2.0.4"
 HISAT2_2PASS_NAME  = HISAT2_NAME + "_2pass"
 CRAC_NAME          = "crac-2.5.0"
 GSNAP_NAME         = "gsnap" # version 2016-11-07
+TOPHAT2_NAME       = "tophat2"
 
 # CALLERS
 GATK_NAME       = "gatk"
@@ -76,6 +76,7 @@ CRAC_DIR          = MAPPING_DIR + "/" + CRAC_NAME
 HISAT2_DIR        = MAPPING_DIR + "/" + HISAT2_NAME
 HISAT2_2PASS_DIR  = MAPPING_DIR + "/" + HISAT2_2PASS_NAME
 GSNAP_DIR         = MAPPING_DIR + "/" + GSNAP_NAME
+TOPHAT2_DIR       = MAPPING_DIR + "/" + TOPHAT2_NAME
 
 MAPPERS = [STAR_NAME, HISAT2_NAME, HISAT2_2PASS_NAME]
 #MAPPERS = [STAR_NAME, HISAT2_NAME, HISAT2_2PASS_NAME, GSNAP_NAME]
@@ -92,6 +93,8 @@ CALLING_PIPELINES.append(CRAC_NAME)
 FUSION_PIPELINES = expand("{name}-{nb}chimSegmentMin", name = STAR_NAME, nb = CHIMSEGMENT_VALUES) +  expand("{name}-{nb}minChimValue", name = CRAC_NAME, nb = CHIMVALUE_VALUES)
 
 MAPPERS.append(CRAC_NAME)
+#MAPPERS.append(GSNAP_NAME)
+#MAPPERS.append(TOPHAT2_NAME)
 
 MUTATION_TYPES = ["snp","insertion","deletion"]
 
@@ -106,29 +109,32 @@ GATK                    = "java -Djava.io.tmpdir=" + TMP_DIR + " -jar /data/shar
 SPLITNCIGARREADS        = GATK + " -T SplitNCigarReads"
 HAPLOTYPECALLER         = GATK + " -T HaplotypeCaller"
 HISAT2                  = "hisat2"
+TOPHAT2                 = "tophat2"
 FREEBAYES               = "freebayes"
 GSNAP                   = "gsnap"
 MPILEUP                 = "samtools mpileup"
 BCFTOOLSCALL            = "bcftools call"
 CRACTOOLSEXTRACT        = "cractools extract"
-REMOVESIMCTFNCHIM       = SCRIPTS_DIR + "/removeSimCTfNchimeras.pl"
 
-ruleorder: benchct_fusions > benchct_mutations > benchct_generic > benchct_configfile_mutation > benchct_configfile_mapping > benchct_configfile_fusion > vcf_sort > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star_split_fusion > star_fusion_post > star_fusion > star > gsnap > cractools_split_fusion > cractools > crac > crac_fusion > split_simct_fusions > flux_par
+ruleorder: merge_true_positives_mutations > merge_true_positives_fusions > merge_true_positives_mapping > benchct_mapping > benchct_fusions > benchct_mutations > benchct_generic > benchct_configfile_mutation > benchct_configfile_mapping > benchct_configfile_fusion > vcf_sort > HaplotypeCaller > SplitNCigarReads > MarkDuplicates > addRG > mapping_stats > hisat2_2pass > hisat2 > star_split_fusion > star_fusion_post > star_fusion > star > gsnap > crac_chimvalue_filter > cractools_split_fusion > cractools > crac > crac_fusion > split_simct_fusions > vcf_compress > simct > flux_par
 
 rule all:
   input: 
     figures = expand("{dir}/{sample}/{type}_accuracy_sensitivity.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
-                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["mapping"]),
+                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["splice","alignment"]),
     figures_p = expand("{dir}/{sample}/{type}_true_false_positives.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
-                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["mapping"]),
+                     type = MUTATION_TYPES + ["colinear_fusion","noncolinear_fusion"] + ["splice","alignment"]),
     tp_figs_mutation = expand("{dir}/{sample}/mutations-{event}-true-positives.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
                      event = MUTATION_TYPES),
+    tp_figs_mapping  = expand("{dir}/{sample}/mapping-splice-true-positives.pdf",
+                     dir = FIGURES_DIR,
+                     sample = DATASETS),
     tp_figs_fusion = expand("{dir}/{sample}/{type}-chimera-true-positives.pdf",
                      dir = FIGURES_DIR,
                      sample = DATASETS,
@@ -151,7 +157,7 @@ rule flux_par:
     shell("echo 'TMP_DIR {params.tmp_dir}' >> {output}")
     shell("echo 'ERR_FILE {input.error_model}' >> {output}")
 
-#rule simct:
+rule simct:
 #  input:
 #    genome = GENOME_DIR,
 #    annot  = ANNOTATIONS,
@@ -162,14 +168,14 @@ rule flux_par:
 #    indel_rate = lambda wildcards: CONDITIONS[wildcards.condition]["indel_rate"],
 #    nb_fusions = lambda wildcards: CONDITIONS[wildcards.condition]["nb_fusions"],
 #    nb_molecules = lambda wildcards: CONDITIONS[wildcards.condition]["nb_molecules"], 
-#    out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
 #  output:
+#    out_dir = DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}",
 #    info =      DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/info.txt",
 #    chimeras =  DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/chimeras.tsv.gz",
 #    r1 =        DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_1.fastq.gz",
 #    r2 =        DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/reads_2.fastq.gz",
 #  log: DATASET_DIR + "/{genome}-{read_length}bp-{nb_reads}M-{condition}/stderr.log",
-#  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {params.out_dir} \
+#  shell: """{SIMCT} -g {input.genome} -a {input.annot} -o {output.out_dir} \
 #            -s {params.sub_rate} -i {params.indel_rate} \
 #            -d {params.indel_rate} -f {params.nb_fusions} --nb-reads {params.nb_reads}000000 \
 #            --nb-molecules {params.nb_molecules} \
@@ -351,6 +357,33 @@ rule gsnap:
            {input.r1} {input.r2} 2> {log} \
            | samtools view -bS - | samtools sort - -o {output.bam}"""
 
+rule tophat2:
+  input:
+    r1 = DATASET_DIR + "/{sample}/reads_1.fastq.gz",
+    r2 = DATASET_DIR + "/{sample}/reads_2.fastq.gz",
+  params:
+    index = "/data/indexes/bowtie2/GRCh38_with_MT/GRCh38_with_MT",
+    #index = "/data/indexes/bowtie2/GRCh38/GRCh38",
+  output:
+    dir     = TOPHAT2_DIR + "/{sample}",
+    bam     = TOPHAT2_DIR + "/{sample}/accepted_hits.bam",
+    splice  = TOPHAT2_DIR + "/{sample}/junctions.bed",
+    insert  = TOPHAT2_DIR + "/{sample}/insertions.bed",
+    deleti  = TOPHAT2_DIR + "/{sample}/deletions.bed",
+    chimer  = TOPHAT2_DIR + "/{sample}/fusions.out",
+    time    = TOPHAT2_DIR + "/{sample}-time.txt",
+  log: TOPHAT2_DIR + "/{sample}-tophat2.log"
+  threads: NB_THREADS_MAPPERS
+  shell: """/usr/bin/time -v -o {output.time} \
+           {TOPHAT2} --max-intron-length {MAX_SPLICE_LENGTH} \
+           -p {threads} --fusion-search -o {output.dir} \
+           {params.index} {input.r1} {input.r2} 2> {log}"""
+
+rule tophat2_post_bam:
+  input: TOPHAT2_DIR + "/{sample}/accepted_hits.bam"
+  output: TOPHAT2_DIR + "/{sample}.bam"
+  shell: "ln -s ../../{input} {output}"
+
 rule mapping_stats:
   input: expand("{dir}/{mapper}/{sample}-time.txt", dir = MAPPING_DIR, mapper = MAPPERS, sample = DATASETS)
   output: MAPPING_DIR + "/time.tsv"
@@ -381,7 +414,11 @@ rule mapping_stats_figure:
     R("""
     library(ggplot2)
     dat <- read.table("{input}")
-    ggplot(dat, aes(x=V1,y=V4,fill=V2)) + geom_bar(stat="identity",position="dodge") + facet_grid(V3~.,scales="free")
+    dat[dat$V1 == "hisat2-2.0.4_2pass" & dat$V3 == "time",]$V4 <- dat[dat$V1 == "hisat2-2.0.4_2pass" & dat$V3 == "time",]$V4 + dat[dat$V1 == "hisat2-2.0.4" & dat$V3 == "time",]$V4
+    ggplot(dat, aes(x=V1,y=V4,fill=V2)) + 
+      geom_bar(stat="identity",position="dodge") + 
+      facet_grid(V3~.,scales="free") +
+      theme_bw() + theme(legend.position="bottom",axis.title=element_blank(),legend.title=element_blank()) + 
     ggsave("{output}",width=10,height=3)
     """)
 
@@ -575,16 +612,57 @@ rule benchct_configfile_mapping:
       if name.find("star") != -1:
         f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "/SJ.out.tab\n")
         f.write("        type: STAR::Junction\n")
+        f.write("        true_positives: " + params.tp_dir + "/" + name + "\n")
       elif name.find("crac") != -1:
         f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "-splice.bed\n")
         f.write("        type: BED::Junction\n")
+        f.write("        true_positives: " + params.tp_dir + "/" + name + "\n")
       elif name.find("hisat") != -1:
         f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "_novel_splice.bed\n")
         f.write("        type: Hisat::Splice\n")
+        f.write("        true_positives: " + params.tp_dir + "/" + name + "\n")
+      elif name.find("tophat2") != -1:
+        f.write("      - name: " + MAPPING_DIR + "/" + name + "/" + params.sample + "/junctions.bed\n")
+        f.write("        type: BED::Junction\n")
+        f.write("        true_positives: " + params.tp_dir + "/" + name + "\n")
       else:
         # Otherwise we check splices from SAM file
         f.write("          - splice\n")
     f.close()
+
+rule benchct_mapping:
+  input:
+    conf = BENCHCT_MAPPING_DIR + "/{sample}.yaml",
+  output: 
+    bench = BENCHCT_MAPPING_DIR + "/{sample}.tsv",
+    tp_log = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-{event}.log",
+                    bench_dir = BENCHCT_MAPPING_DIR,
+                    pipeline = MAPPERS,
+                    event = ["splice"])
+  shell: "benchCT -v {input.conf} > {output.bench}"
+
+rule split_benchct_mapping_results:
+  input: BENCHCT_MAPPING_DIR + "/{sample}.tsv"
+  output:
+    alignment = BENCHCT_DIR + "/alignment/{sample}.tsv",
+    splice = BENCHCT_DIR + "/splice/{sample}.tsv",
+  run:
+    shell("head -1 {input} > {output.alignment}")
+    shell("grep mapping {input} >> {output.alignment}")
+    shell("head -1 {input} > {output.splice}")
+    shell("grep splice {input} >> {output.splice}")
+
+rule merge_true_positives_mapping:
+  input: 
+    bench = expand("{bench_dir}/{{sample}}/true-positives/{pipeline}-splice.log",
+                bench_dir = BENCHCT_MAPPING_DIR,
+                pipeline = MAPPERS),
+  output: BENCHCT_MAPPING_DIR + "/{sample}/true-positives/splice.tsv"
+  version: "0.01"
+  run: 
+    shell("rm -f {output}")
+    for i, name in enumerate(MAPPERS):
+      shell("cut -f1 " + input.bench[i] + "| awk '{{print \"" + name + "\",$1}}' >> {output}")
 
 rule benchct_generic:
   input:
@@ -613,17 +691,19 @@ rule mutation_intersection_plot:
     title = "{type} - {event} - {sample} - true positives"
   version: "0.019"
   run:
-    R("""
-    library(UpSetR)
-    dat <- read.table("{input}")
-    mut <- as.data.frame.matrix(t(table(dat)))
-    pdf(file = "{output}", width = 8, height = 5, onefile=FALSE)
-    plot(0,type='n',axes=FALSE,ann=FALSE)
-    #mtext("{params.title}")
-    upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut),nintersects=10)
-    title(main = "{params.title}")
-    dev.off(which = dev.cur())
-    """)
+    if os.stat(input[0]).st_size != 0:
+      R("""
+      library(UpSetR)
+      dat <- read.table("{input}")
+      mut <- as.data.frame.matrix(t(table(dat)))
+      pdf(file = "{output}", onefile=FALSE, width = 8, height = nlevels(dat$V1)*0.3 + 2)
+      plot(0,type='n',axes=FALSE,ann=FALSE)
+      upset(mut, sets.bar.color = "#56B4E9", order.by = "freq", sets = colnames(mut),nintersects=10)
+      #title(main = "{params.title}")
+      dev.off(which = dev.cur())
+      """)
+    else:
+      shell("touch {output}")
 
 rule precision_recall_plot:
   input:
@@ -645,13 +725,14 @@ rule precision_recall_plot:
     #dat2 <- dat2[order(dat2$fscore,decreasing=T),]
     dat2 <- melt(dat2,id=c("software","event"))
     dat_plot1 <- subset(dat2, variable == "Sensitivity" | variable == "Accuracy" | variable == "fscore")
-    pdf("{output.acc_sen}", width = 8, height = 3)
+    pdf("{output.acc_sen}", width = 8, height = nlevels(dat$software)*0.10 + 1.5)
     plot1 <- ggplot(dat_plot1, aes(x=software,y=value,color=variable)) + 
       geom_point() + 
       #facet_grid(~event, scales = "free") + 
       coord_flip() + 
       ylim(NA,1) + 
-      theme_bw() + theme(legend.position="bottom",axis.title.x=element_blank(),legend.title=element_blank()) + 
+      #ylim(0,1) + 
+      theme_bw() + theme(legend.position="bottom",axis.title=element_blank(),legend.title=element_blank(), axis.text.y=element_text(size=rel(0.75))) + 
       scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9"))
     dat_plot2 <- subset(dat2, variable == "false-positives")
     plot2 <- ggplot(dat_plot2, aes(x=software,y=value,fill=variable)) + 
@@ -660,7 +741,8 @@ rule precision_recall_plot:
       coord_flip() + 
       theme_bw() + theme(legend.position="bottom",axis.text.y=element_blank(),axis.title.y=element_blank(),axis.ticks.y=element_blank(),axis.title.x=element_blank(),legend.title=element_blank(),panel.border=element_blank(),panel.margin=element_blank(),panel.grid=element_blank())
     lay <- rbind(c(1,1,1,1,2))
-    grid.arrange(plot1, plot2, ncol=2,top="{params.title}", layout_matrix = lay)
+    #grid.arrange(plot1, plot2, ncol=2,top="{params.title}", layout_matrix = lay)
+    grid.arrange(plot1, plot2, ncol=2, layout_matrix = lay)
     dev.off()
     """)
 
@@ -681,10 +763,10 @@ rule true_false_positives_plot:
       geom_bar(position = "dodge", stat = "identity") + 
       facet_grid(~variable, scales = "free") + 
       coord_flip() + 
-      theme_bw() + 
+      theme_bw() + theme(legend.position="none",axis.title=element_blank(), axis.text.y=element_text(size=rel(0.75)))
       #scale_color_manual(values=c("#4E77AA", "#E69F00", "#A9A9A9")) +
-      ggtitle("{params.title}")
-    ggsave("{output.acc_sen}", width = 9, height = 3)
+      #ggtitle("{params.title}")
+    ggsave("{output.acc_sen}", width = 8, height = nlevels(dat$software)*0.10 + 1)
     """)
 
 
